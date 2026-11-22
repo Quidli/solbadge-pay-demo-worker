@@ -135,7 +135,18 @@ async function connect(env, method, path, body) {
   }
 }
 
+// What the badge's font can draw: Connect writes X as "𝕏", and labels may hold other symbols.
+const plain = (v) => String(v ?? '').replace(/𝕏/gu, 'X').replace(/[^\x20-\x7e]/g, '').replace(/\s+/g, ' ').trim();
+
+/** "X reputation: 1985 (reputable)" from one of Connect's score entries. */
+export function scoreLine(s) {
+  const ref = typeof s.reference === 'string' && s.reference !== String(s.value) ? plain(s.reference) : '';
+  return `${plain(s.label).slice(0, 40)}: ${plain(s.value)}${ref ? ` (${ref.slice(0, 20)})` : ''}`;
+}
+
 // GET /score/<handle>: a handle's social reputation, cut down to what the badge shows.
+// `score` is the Quidli score, null for someone who isn't a Connect member; `lines`
+// are what Connect knows anyway (an X reputation from Ethos, say).
 async function score(env, handle) {
   if (!/^\w{1,15}$/.test(handle)) return json(400, { text: "That isn't an X handle" });
   const r = await connect(env, 'GET', `/scores/twitter/${handle}`);
@@ -144,7 +155,7 @@ async function score(env, handle) {
   const lines = [];
   for (const group of [r.data.categories?.socials, r.data.categories?.wallets]) {
     for (const s of Array.isArray(group) ? group : []) {
-      if (lines.length < 3 && s?.label) lines.push(`${String(s.label).slice(0, 40)}: ${s.value}`);
+      if (lines.length < 3 && s?.label) lines.push(scoreLine(s));
     }
   }
   return json(200, { score: r.data.quidliScore ?? null, lines });
