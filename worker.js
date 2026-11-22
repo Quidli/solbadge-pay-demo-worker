@@ -1,4 +1,4 @@
-// Connect Pay worker: stands between a Solana badge and Quidli Connect.
+// SolBadge Pay worker: stands between a Solana badge and Quidli Connect.
 //
 // The badge holds no key. Every request it makes arrives signed by the badge
 // server, saying which badge and which app sent it. This worker checks that
@@ -9,7 +9,7 @@
 //   CONNECT_API_KEY  your Connect API key (connect.quid.li, Enable API access)
 //   BADGE_IDS        the badges allowed to pay, e.g. "7K2Q9M" or "7K2Q9M,4HX2PD"
 // Optional var APP_ID: the badge app's id, only if you publish the app under
-// another id (default "connect-pay").
+// another id (default "solbadge-pay").
 
 const CONNECT = 'https://api.connect.quid.li';
 const BADGE_SERVER = 'https://badge-api.solana.com';
@@ -238,12 +238,12 @@ export default {
   async fetch(req, env) {
     const url = new URL(req.url);
     if (req.method === 'GET' && url.pathname === '/') {
-      return new Response('Connect Pay worker. It answers signed requests from the badge app only.\n');
+      return new Response('SolBadge Pay worker. It answers signed requests from the badge app only.\n');
     }
     const body = req.method === 'POST' ? await req.text() : '';
     if (body.length > 2048) return json(413, { text: 'Request too big' });
 
-    const who = await fromBadge(req, body, env.APP_ID || 'connect-pay');
+    const who = await fromBadge(req, body, env.APP_ID || 'solbadge-pay');
     if (!who) return json(401, { text: 'Not a signed request from the badge app.' });
     const allowed = (env.BADGE_IDS || '').split(',').map((s) => s.trim()).filter(Boolean);
     if (!allowed.includes(who.badge)) {
