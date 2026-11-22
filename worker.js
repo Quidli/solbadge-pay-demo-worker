@@ -119,9 +119,11 @@ function said(data, status) {
   return typeof m === 'string' && m ? m : `Connect answered ${status}`;
 }
 
-/** { status, data } for any answer from Connect, null when there was none in time. */
-async function connect(env, method, path, body) {
-  const headers = { accept: 'application/json', 'x-api-key': env.CONNECT_API_KEY };
+/** { status, data } for any answer from Connect, null when there was none in time.
+ *  `keyed: false` leaves the API key out, for calls Connect answers without one. */
+async function connect(env, method, path, body, { keyed = true } = {}) {
+  const headers = { accept: 'application/json' };
+  if (keyed) headers['x-api-key'] = env.CONNECT_API_KEY;
   if (body) headers['content-type'] = 'application/json';
   try {
     const res = await fetch(CONNECT + path, {
@@ -149,7 +151,10 @@ export function scoreLine(s) {
 // are what Connect knows anyway (an X reputation from Ethos, say).
 async function score(env, handle) {
   if (!/^\w{1,15}$/.test(handle)) return json(400, { text: "That isn't an X handle" });
-  const r = await connect(env, 'GET', `/scores/twitter/${handle}`);
+  // Without the key: a reputation check must stay a read. A keyed lookup appeared to
+  // make Connect set up an account and wallet for the person, whose fresh wallet then
+  // scored 0 (untrusted). Keyless, it also leaves the key's rate limit for payments.
+  const r = await connect(env, 'GET', `/scores/twitter/${handle}`, undefined, { keyed: false });
   if (!r) return json(200, { text: "Connect didn't answer in time." });
   if (r.status !== 200) return json(200, { text: said(r.data, r.status) });
   const lines = [];
