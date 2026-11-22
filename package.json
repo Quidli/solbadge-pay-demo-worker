@@ -1,6 +1,7 @@
 {
   "name": "solanabadge-connectpay",
   "private": true,
+  "type": "module",
   "description": "Stands between a Solana Breakpoint badge and Quidli Connect.",
   "scripts": {
     "deploy": "npx wrangler deploy"

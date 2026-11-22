@@ -2,8 +2,8 @@
 //
 // The badge holds no key. Every request it makes arrives signed by the badge
 // server, saying which badge and which app sent it. This worker checks that
-// signature, lets only the badges you list through, enforces the caps below,
-// and calls Connect with a key that never leaves your Cloudflare account.
+// signature, lets only your badges through, and calls Connect with a key that
+// never leaves your Cloudflare account.
 //
 // Settings, both secrets (the Deploy to Cloudflare button asks for them):
 //   CONNECT_API_KEY  your Connect API key (connect.quid.li, Enable API access)
@@ -13,19 +13,15 @@
 
 const CONNECT = 'https://api.connect.quid.li';
 const BADGE_SERVER = 'https://badge-api.solana.com';
+const SOLANA = 1399811149; // Connect's chain id for Solana mainnet
 
-// What a badge may send. `token` is null for a chain's native token; `max` is
-// the most one payment may be. The badge reads this list from GET /assets, so
-// changing it here is all it takes. Chain ids: GET https://api.connect.quid.li/chains
-export const ASSETS = [
-  { id: 'usdc-sol', label: 'USDC', chain: 'Solana', chainId: 1399811149, dec: 6,
-    token: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
-    max: '5', amounts: ['0.10', '0.50', '1', '2', '5'] },
-  { id: 'sol', label: 'SOL', chain: 'Solana', chainId: 1399811149, dec: 9, token: null,
-    max: '0.05', amounts: ['0.001', '0.005', '0.01', '0.05'] },
-  { id: 'eth-base', label: 'ETH', chain: 'Base', chainId: 8453, dec: 18, token: null,
-    max: '0.002', amounts: ['0.0001', '0.0005', '0.001'] },
-];
+// The badge offers whatever your Connect wallet holds on Solana: SOL and any SPL
+// token. To offer a token, send some to the wallet. Some SOL is always kept
+// back, because every send pays a fee in SOL (and a token sent to someone new
+// pays about 0.002 SOL to open their token account).
+const SOL_KEEP = 10_000_000n;  // 0.01 SOL, never offered
+const SOL_MIN = 1_000_000n;    // 0.001 SOL, the smallest SOL payment (a new account needs 0.00089)
+const MAX_ASSETS = 8;          // the badge's list stays short
 
 // The badge gives up after 6 s, so Connect gets a little less than that.
 const CONNECT_TIMEOUT_MS = 4500;
@@ -87,17 +83,24 @@ async function fromBadge(req, body, app) {
 // ---------------------------------------------------------------------------
 // Amounts, as strings of digits: token amounts go past what a double holds.
 
-/** "1.5", 6 -> "1500000", or null when the text isn't a positive amount. */
-export function toUnits(text, dec) {
-  const m = typeof text === 'string' && /^(\d*)(?:\.(\d+))?$/.exec(text);
-  if (!m || (m[1] === '' && m[2] === undefined)) return null;
-  const frac = m[2] ?? '';
-  if (frac.length > dec) return null;
-  const units = (m[1] + frac + '0'.repeat(dec - frac.length)).replace(/^0+/, '');
-  return units === '' ? null : units;
+/** "1500000", 6 -> "1.5" */
+export function fromUnits(units, dec) {
+  if (dec === 0) return units;
+  const s = units.padStart(dec + 1, '0');
+  const frac = s.slice(-dec).replace(/0+$/, '');
+  return s.slice(0, -dec) + (frac ? '.' + frac : '');
 }
 
-const over = (a, b) => a.length !== b.length ? a.length > b.length : a > b;
+/** Up to four round amounts (1, 2 or 5 times a power of ten) from `min` to `max`, smallest first. */
+export function quickPicks(max, min) {
+  const out = [];
+  for (let p = 1n; p <= max; p *= 10n) {
+    for (const m of [1n, 2n, 5n]) if (m * p <= max && m * p >= min) out.push(m * p);
+  }
+  return out.slice(-4);
+}
+
+const MINT = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/; // a Solana address, base58
 
 // ---------------------------------------------------------------------------
 
@@ -147,8 +150,44 @@ async function score(env, handle) {
   return json(200, { score: r.data.quidliScore ?? null, lines });
 }
 
-// POST /pay {id, handle, asset, amount}. The answer's `state` tells the badge
-// what to do with the payment it saved:
+// GET /assets: what the wallet can send now, as the badge shows it. `max` is
+// the most one payment can be: the wallet's balance, less the SOL kept for fees.
+// `wallet` is the wallet's Solana address, which the badge shows as a QR code
+// to top it up (sent with an empty list too: that's when it's needed most).
+async function assets(env) {
+  const r = await connect(env, 'GET', `/drop/balance?chainId=${SOLANA}`);
+  if (!r) return json(200, { text: "Connect didn't answer in time." });
+  if (r.status === 401 || r.status === 403) return json(200, { text: "Connect refused the worker's API key." });
+  if (r.status !== 200) return json(200, { text: said(r.data, r.status) });
+  const wallet = MINT.test(r.data.walletAddress ?? '') ? { wallet: r.data.walletAddress } : {};
+  const list = [];
+  for (const x of Array.isArray(r.data.assets) ? r.data.assets : []) {
+    const native = x?.type === 'native';
+    const dec = x?.decimals;
+    if (!Number.isInteger(dec) || dec < 0 || dec > 30 || !/^\d{1,40}$/.test(x.balanceInWei ?? '')) continue;
+    if (!native && !MINT.test(x.tokenContract ?? '')) continue;
+    const max = BigInt(x.balanceInWei) - (native ? SOL_KEEP : 0n);
+    const min = native ? SOL_MIN : 1n;
+    if (max < min) continue;
+    const symbol = String(x.symbol ?? '').replace(/[^\x20-\x7e]/g, '').trim().slice(0, 10);
+    const a = {
+      id: native ? 'sol' : x.tokenContract,
+      label: symbol || (native ? 'SOL' : x.tokenContract.slice(0, 4) + '..'),
+      chain: 'Solana',
+      dec,
+      max: fromUnits(String(max), dec),
+      amounts: quickPicks(max, min).map((u) => fromUnits(String(u), dec)),
+    };
+    if (native) list.unshift(a); else list.push(a);
+  }
+  if (!list.length) return json(200, { text: 'The Connect wallet has nothing to send on Solana yet. Add some SOL first.', ...wallet });
+  return json(200, { assets: list.slice(0, MAX_ASSETS), ...wallet });
+}
+
+// POST /pay {id, handle, asset, units}: `asset` is "sol" or a token's mint
+// address, `units` the amount in the token's smallest unit (the badge has the
+// decimals from /assets). The answer's `state` tells the badge what to do with
+// the payment it saved:
 //   sent        done
 //   processing  nothing sent yet, ask again shortly with the same id
 //   failed      this request sent nothing
@@ -158,28 +197,30 @@ async function pay(env, body) {
   try { p = JSON.parse(body); } catch { p = null; }
   const failed = (text) => json(200, { state: 'failed', text });
   if (!p || typeof p !== 'object') return failed('Bad request');
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(p.id ?? '')) return failed('Bad payment id');
-  if (!/^\w{1,15}$/.test(p.handle ?? '')) return failed("That isn't an X handle");
-  const a = ASSETS.find((x) => x.id === p.asset);
-  if (!a) return failed('This worker does not offer that asset');
-  const units = toUnits(p.amount, a.dec);
-  if (!units) return failed('Not an amount');
-  if (over(units, toUnits(a.max, a.dec))) return failed(`Most per payment: ${a.max} ${a.label}`);
+  if (typeof p.id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(p.id)) return failed('Bad payment id');
+  if (typeof p.handle !== 'string' || !/^\w{1,15}$/.test(p.handle)) return failed("That isn't an X handle");
+  const sol = p.asset === 'sol';
+  if (!sol && !(typeof p.asset === 'string' && MINT.test(p.asset))) return failed('Not a token');
+  if (!(typeof p.units === 'string' && /^[1-9]\d{0,39}$/.test(p.units))) return failed('Not an amount');
+  if (sol && BigInt(p.units) < SOL_MIN) return failed('The smallest SOL payment is 0.001 SOL.');
 
   const drop = {
     idempotencyKey: p.id,
-    chainId: a.chainId,
+    chainId: SOLANA,
     recipients: [{ type: 'twitter', username: p.handle }],
-    amountInWeiPerRecipient: units,
+    amountInWeiPerRecipient: p.units,
   };
-  if (a.token) drop.tokenContract = a.token;
+  if (!sol) drop.tokenContract = p.asset;
   const r = await connect(env, 'POST', '/drop', drop);
   if (!r) return json(200, { state: 'unknown', text: "Connect didn't answer in time." });
   if (r.status === 200 || r.status === 201) return json(200, { state: 'sent' });
   if (r.status === 202) return json(200, { state: 'processing' });
   if (r.status >= 500) return json(200, { state: 'unknown', text: said(r.data, r.status) });
   if (r.status === 401 || r.status === 403) return failed("Connect refused the worker's API key.");
-  return failed(said(r.data, r.status));
+  const text = said(r.data, r.status);
+  // Connect's "Insufficient funds" on a token send is often the SOL for fees.
+  if (!sol && /insufficient/i.test(text)) return failed(`${text}. Sending a token also takes about 0.002 SOL in fees.`);
+  return failed(text);
 }
 
 export default {
@@ -199,9 +240,7 @@ export default {
     }
     if (!env.CONNECT_API_KEY) return json(403, { text: 'The worker has no CONNECT_API_KEY yet.' });
 
-    if (req.method === 'GET' && url.pathname === '/assets') {
-      return json(200, { assets: ASSETS.map(({ id, label, chain, dec, max, amounts }) => ({ id, label, chain, dec, max, amounts })) });
-    }
+    if (req.method === 'GET' && url.pathname === '/assets') return assets(env);
     if (req.method === 'GET' && url.pathname.startsWith('/score/')) {
       return score(env, url.pathname.slice('/score/'.length));
     }
