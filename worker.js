@@ -229,7 +229,7 @@ async function assets(env) {
 // address, `units` the amount in the token's smallest unit (the badge has the
 // decimals from /assets). The answer's `state` tells the badge what to do with
 // the payment it saved:
-//   sent        done
+//   sent        done; `tx` is the Solana transaction, when Connect gave it
 //   processing  nothing sent yet, ask again shortly with the same id
 //   failed      this request sent nothing
 //   unknown     no final answer: it may have gone through, retry with the same id
@@ -254,7 +254,16 @@ async function pay(env, body) {
   if (!sol) drop.tokenContract = p.asset;
   const r = await connect(env, 'POST', '/drop', drop);
   if (!r) return json(200, { state: 'unknown', text: "Connect didn't answer in time." });
-  if (r.status === 200 || r.status === 201) return json(200, { state: 'sent' });
+  if (r.status === 200 || r.status === 201) {
+    // Connect's answer says how the transaction went: "failed", or "partial" with
+    // the one recipient among failedRecipients, means nothing reached them.
+    if (r.data.status === 'failed' || r.data.status === 'partial') {
+      return failed(r.data.failedRecipients ? `Connect couldn't send to @${p.handle}.` : "Connect couldn't send it.");
+    }
+    const tx = typeof r.data.transferHash === 'string' && /^[1-9A-HJ-NP-Za-km-z]{64,90}$/.test(r.data.transferHash)
+      ? { tx: r.data.transferHash } : {};
+    return json(200, { state: 'sent', ...tx });
+  }
   if (r.status === 202) return json(200, { state: 'processing' });
   if (r.status >= 500) return json(200, { state: 'unknown', text: said(r.data, r.status) });
   if (r.status === 401 || r.status === 403) return failed("Connect refused the worker's API key.");
