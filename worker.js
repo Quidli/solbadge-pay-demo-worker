@@ -22,6 +22,8 @@ const SOLANA = 1399811149; // Connect's chain id for Solana mainnet
 const SOL_KEEP = 10_000_000n;  // 0.01 SOL, never offered
 const SOL_MIN = 1_000_000n;    // 0.001 SOL, the smallest SOL payment (a new account needs 0.00089)
 const MAX_ASSETS = 8;          // the badge's list stays short
+const SOL_LOW = SOL_KEEP + 2_039_280n; // below this, a token payment to someone new can't pay its fees
+const LOW_NOTE = 'Low on SOL: every payment pays its fee in SOL. Add some under Add funds.';
 
 // The badge gives up after 6 s, so Connect gets a little less than that.
 const CONNECT_TIMEOUT_MS = 4500;
@@ -195,6 +197,7 @@ async function score(env, handle) {
 // the most one payment can be: the wallet's balance, less the SOL kept for fees.
 // `wallet` is the wallet's Solana address, which the badge shows as a QR code
 // to top it up (sent with an empty list too: that's when it's needed most).
+// `note` warns when there's too little SOL left for fees.
 async function assets(env) {
   const r = await connect(env, 'GET', `/drop/balance?chainId=${SOLANA}`);
   if (!r) return json(200, { text: "Connect didn't answer in time." });
@@ -202,11 +205,13 @@ async function assets(env) {
   if (r.status !== 200) return json(200, { text: said(r.data, r.status) });
   const wallet = MINT.test(r.data.walletAddress ?? '') ? { wallet: r.data.walletAddress } : {};
   const list = [];
+  let sol = 0n;
   for (const x of Array.isArray(r.data.assets) ? r.data.assets : []) {
     const native = x?.type === 'native';
     const dec = x?.decimals;
     if (!Number.isInteger(dec) || dec < 0 || dec > 30 || !/^\d{1,40}$/.test(x.balanceInWei ?? '')) continue;
     if (!native && !MINT.test(x.tokenContract ?? '')) continue;
+    if (native) sol = BigInt(x.balanceInWei);
     const max = BigInt(x.balanceInWei) - (native ? SOL_KEEP : 0n);
     const min = native ? SOL_MIN : 1n;
     if (max < min) continue;
@@ -222,7 +227,9 @@ async function assets(env) {
     if (native) list.unshift(a); else list.push(a);
   }
   if (!list.length) return json(200, { text: 'The Connect wallet has nothing to send on Solana yet. Add some SOL first.', ...wallet });
-  return json(200, { assets: list.slice(0, MAX_ASSETS), ...wallet });
+  // `note`: a warning for the badge to show with the list.
+  const note = sol < SOL_LOW ? { note: LOW_NOTE } : {};
+  return json(200, { assets: list.slice(0, MAX_ASSETS), ...wallet, ...note });
 }
 
 // POST /pay {id, handle, asset, units}: `asset` is "sol" or a token's mint
