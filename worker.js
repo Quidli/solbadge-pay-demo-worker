@@ -146,6 +146,19 @@ export function scoreLine(s) {
   return `${plain(s.label).slice(0, 40)}: ${plain(s.value)}${ref ? ` (${ref.slice(0, 20)})` : ''}`;
 }
 
+/** Ethos's own score for an X account, { score, level } or null. Public, no key. */
+async function ethosX(handle) {
+  try {
+    const res = await fetch(`https://api.ethos.network/api/v2/score/userkey?userkey=service:x.com:username:${handle}`, {
+      headers: { 'X-Ethos-Client': 'solbadge-pay' }, signal: AbortSignal.timeout(CONNECT_TIMEOUT_MS),
+    });
+    const d = res.ok ? await res.json() : null;
+    return Number.isFinite(d?.score) ? { score: d.score, level: typeof d.level === 'string' ? d.level : '' } : null;
+  } catch {
+    return null;
+  }
+}
+
 // GET /score/<handle>: a handle's social reputation, cut down to what the badge shows.
 // `score` is the Quidli score, null for someone who isn't a Connect member; `lines`
 // are what Connect knows anyway (an X reputation from Ethos, say).
@@ -154,16 +167,28 @@ async function score(env, handle) {
   // Without the key: a reputation check must stay a read. A keyed lookup appeared to
   // make Connect set up an account and wallet for the person, whose fresh wallet then
   // scored 0 (untrusted). Keyless, it also leaves the key's rate limit for payments.
-  const r = await connect(env, 'GET', `/scores/twitter/${handle}`, undefined, { keyed: false });
+  // Ethos is asked at the same time, as a stopgap: once an X account belongs to a
+  // Connect user, Connect leaves its X reputation out (see below).
+  const [r, ethos] = await Promise.all([
+    connect(env, 'GET', `/scores/twitter/${handle}`, undefined, { keyed: false }),
+    ethosX(handle),
+  ]);
   if (!r) return json(200, { text: "Connect didn't answer in time." });
   if (r.status !== 200) return json(200, { text: said(r.data, r.status) });
-  const lines = [];
+  const found = [];
   for (const group of [r.data.categories?.socials, r.data.categories?.wallets]) {
     for (const s of Array.isArray(group) ? group : []) {
-      if (lines.length < 3 && s?.label) lines.push(scoreLine(s));
+      if (!s?.label) continue;
+      // A wallet scored 0 is most likely one Connect set up for someone who never
+      // used it; it says nothing about them, so it isn't shown.
+      if (s.code === 'ethos_wallet_reputation' && Number(s.value) === 0) continue;
+      found.push(s);
     }
   }
-  return json(200, { score: r.data.quidliScore ?? null, lines });
+  if (ethos && !found.some((s) => s.code === 'ethos_twitter_reputation')) {
+    found.unshift({ code: 'ethos_twitter_reputation', label: 'X reputation', value: ethos.score, reference: ethos.level });
+  }
+  return json(200, { score: r.data.quidliScore ?? null, lines: found.slice(0, 3).map(scoreLine) });
 }
 
 // GET /assets: what the wallet can send now, as the badge shows it. `max` is
