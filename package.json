@@ -1,0 +1,18 @@
+{
+  "name": "solanabadge-connectpay",
+  "private": true,
+  "description": "Stands between a Solana Breakpoint badge and Quidli Connect.",
+  "scripts": {
+    "deploy": "npx wrangler deploy"
+  },
+  "cloudflare": {
+    "bindings": {
+      "CONNECT_API_KEY": {
+        "description": "Your Connect API key: [connect.quid.li](https://connect.quid.li) > **Enable API access**. Use an account funded with small amounts only."
+      },
+      "BADGE_IDS": {
+        "description": "Your badge's id, from **Set up** in the Connect Pay app on the badge, e.g. `7K2Q9M`. Several: separate with commas."
+      }
+    }
+  }
+}

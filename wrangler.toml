@@ -1,0 +1,9 @@
+name = "solanabadge-connectpay"
+main = "worker.js"
+compatibility_date = "2026-11-01"
+
+# Two secrets, asked for by the Deploy to Cloudflare button (see .dev.vars.example),
+# or set by hand with `npx wrangler secret put <NAME>`:
+#   CONNECT_API_KEY  your Connect API key
+#   BADGE_IDS        the badges allowed to pay, comma-separated, e.g. "7K2Q9M"
+# Change either later in the Cloudflare dashboard: Worker > Settings > Variables and Secrets.

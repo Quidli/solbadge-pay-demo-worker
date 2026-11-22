@@ -1,0 +1,2 @@
+CONNECT_API_KEY=your-connect-api-key # connect.quid.li > Enable API access
+BADGE_IDS=7K2Q9M # your badge's id, shown on the app's Set up screen
